@@ -11,5 +11,9 @@ reboot and manual shutdown.
 The power on/off state is stored in the ATMega328 EEPROM and is used to power on the RPi
 when power is restored.
 
+Repo contains files for project build under VSCode with PlatformIO extensions.
+
+Original code at:
 http://LowPowerLab.com/MightyHat
 PiGateway project: http://LowPowerLab.com/gateway
+

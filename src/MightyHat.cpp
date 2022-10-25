@@ -1,3 +1,13 @@
+// **********************************************************************************
+// Don Mounday:
+// In general removed features and code that is not used by the PoolSmartz package and
+// the pool sensors. No LCD, no buzzer.
+// Heavily edited, code reformating and style change. More use of modern C++ features to
+// experiment with code size and optimizations.
+// Replaced float operations with fixed point.
+// EEPROM is used to save the last power on/off state. If the mains power fails
+// and the low battery voltage results in a RPi shutdown, then when mains power is restored the
+// RPi is powered on if the last state is on and the battery is recharged.
 // **********************************************************************************************************
 // MightyHat gateway base unit sketch that works with MightyHat equipped with RFM69W/RFM69HW/RFM69CW/RFM69HCW
 // This will relay all RF data over serial to the host computer (RaspberryPi) and vice versa.
@@ -8,14 +18,7 @@
 // Copyright Felix Rusu 2020, http://www.LowPowerLab.com/contact
 // **********************************************************************************
 //
-// **********************************************************************************
-// Don Mounday : mounday.com
-// In general removed features and code that is not used by the PoolSmartz package and
-// the pool sensors. No LCD, no buzzer.
-// Code reformating and style change. More use of modern C++ features. 
-// EEPROM is used to save the last power on/off state. If the mains power fails
-// and the low battery voltage results in a RPi shutdown then mains power is restored the
-// RPi is powered on if the last state is on.
+
 #include <EEPROM.h>
 
 #define MHAT_VERSION 3  // latest is R4, only change to "2" if you have a MightyHat R2
@@ -45,8 +48,8 @@
 #define BTN_LED_RED 9
 #define BTN_LED_GRN 6  // This will indicate when Pi has power
 
-#define ON 1
-#define OFF 0
+const uint8_t ON {1};
+const uint8_t OFF{0};
 
 #define BUTTON A2   // Power button pin
 #define BUTTON1 A4  // Backlight control button
@@ -65,28 +68,64 @@
                          // when on battery power this should decrease from 4.15v (fully charged Lipoly) to 3.3v (discharged Lipoly)
                          // trigger a shutdown to the target device once voltage is around 3.4v to allow 30sec safe shutdown
 
-#define BATTERY_VOLTS(analog_reading) analog_reading * 0.00322 * 1.51  // 100/66 is the inverse ratio of the voltage divider ( Batt > 1MEG > A7 > 2MEG > GND )
-#define LOWBATTERYTHRESHOLD 3.5                                        // a shutdown will be triggered to the target device when battery voltage drops below this (Volts)
-#define CHARGINGTHRESHOLD 4.3
-//
-// Times for power and button actions.
-#define RESETHOLDTIME 500           // Button must be hold this many mseconds before a reset is issued (should be much less than SHUTDOWNHOLDTIME)
-#define SHUTDOWNHOLDTIME 2000       // Button must be hold this many mseconds before a shutdown sequence is started (should be much less than ForcedShutoffDelay)
-#define SHUTOFF_TRIGGER_DELAY 6000  // will start checking the SIG_BOOTOK line after this long
-#define PI_SHUTOFF_TIME 20000       // Time after shutoff pulse for SIGBOOTOK to go low.
-#define RESETPULSETIME 500          // When reset is issued, the SHUTOFF signal is held HIGH this many ms
-#define FORCED_SHUTOFF_DELAY 7500   // when SIG_BOOTOK==0 (PI in unknown state): if button is held
-                                    // for this long, force shutdown (this should be less than RecycleTime)
-const int16_t SHUTDOWN_FINAL_DELAY {4500};   // after shutdown signal is received, delay for this long
-                                    // to allow all PI LEDs to stop activity (pulse LED faster)
-const uint16_t RECYCLE_TIME {60000}; // window of time in which SIG_BOOTOK is expected to go HIGH
-                                    // should be at least 3000 more than Min
-                                    // if nothing happens after this window, if button is
-                                    // still pressed, force cutoff power, otherwise switch back to normal ON state
-//
-const int16_t BATTERYREADINTERVAL {2000};
-const uint8_t BAT_REPORT_INTERVALS  {10};  // Report following N BATTERYREADINTERVALs
 
+// Lets try the above using fixed point math, avoiding runtime floating point.
+// A 10 bit ADC step size at 5V 5/1024 = 0.004883V or at 3.3V 3.3/1024 = 0.003223V.
+// Max output values:  1023*4883 = 4995309  and 1023*3223 = 327129
+// Results of these multiples require int32_t types. Normalizing 1.023E3 and 4.883E3 
+// and multiply yeilds 4.9953E6. Or 4.995V. 
+const int16_t LOWBATTERYTHRESHOLDmv {3500};
+const int16_t CHARGINGTHRESHOLDmv {4300};
+//
+// The voltage divider is BATT > 1Meg > A7 > 2.2Meg >GND
+// A7pin volts = ADCReading * 3.223E3. So 1023*.003223 normalized is
+// 1.023E3 * 3.223E3 = 3297129 or 3.29V. 
+// Applying voltage drop of voltage divider is the inverse of 3.2/2.2 or 1.45
+// 3297129/1000 = 3.297E3 * 1.45 ==> 3297*145 = 478065 with 5 decimal places.
+// Divid by 100 to get milliVolts.
+//
+// To find a scaling factor that includes the voltage divider and the ADC step value
+// at 3.3 volts:
+// VDivScaling = 3.223E3 * 145 = 467335. Divid by 100 to reduce number magnitude = 4673.
+// Then ADCReading 1023*4673 => 4780479/1000 or 4780mV
+// or ADCReading 1*4673 => 4673/1000 = 4mv;
+//
+// We expect the constexpr function to be evaluated by the compiler.
+
+constexpr uint32_t ADCVDivScaling()
+{
+    // Voltage divider inverse 3.2/2.2
+    const uint32_t vdInverse{145};
+    const uint32_t adcStepVal{3223};
+    return (vdInverse*adcStepVal)/100; // returns 4 digit value
+}
+//
+// Calculate millivolts by applying scalling and round off.
+//
+int16_t battMilliVolts(uint16_t adcReading){
+    return ((adcReading*ADCVDivScaling())+500)/1000;
+}
+uint16_t systemVoltageMV {5000};
+uint16_t systemVoltagePreviousMV {5000};
+
+
+// Times for power and button actions. Time in milliseconds.
+const int16_t RESETHOLDTIME{500};          // Button must be hold this many mseconds before a reset is issued (should be much less than SHUTDOWNHOLDTIME)
+const int16_t SHUTDOWNHOLDTIME{2000};      // Button must be hold this many mseconds before a shutdown sequence is started (should be much less than ForcedShutoffDelay)
+const int16_t SHUTOFF_TRIGGER_DELAY{6000}; // will start checking the SIG_BOOTOK line after this long
+const int16_t PI_SHUTOFF_TIME{20000};      // Time after shutoff pulse for SIGBOOTOK to go low.
+const int16_t RESETPULSETIME{500};         // When reset is issued, the SHUTOFF signal is held HIGH this many ms
+const int16_t FORCED_SHUTOFF_DELAY{7500};  // when SIG_BOOTOK==0 (PI in unknown state): if button is held
+                                           // for this long, force shutdown (this should be less than RecycleTime)
+const int16_t SHUTDOWN_FINAL_DELAY{4500};  // after shutdown signal is received, delay for this long
+                                           // to allow all PI LEDs to stop activity (pulse LED faster)
+const uint16_t RECYCLE_TIME{60000};        // window of time in which SIG_BOOTOK is expected to go HIGH
+                                           // should be at least 3000 more than Min
+                                           // if nothing happens after this window, if button is
+                                           // still pressed, force cutoff power, otherwise switch back to normal ON state
+//
+const int16_t BATTERYREADINTERVAL{2000};
+const uint8_t BAT_REPORT_INTERVALS{10};    // Report following N BATTERYREADINTERVALs
 
 #ifdef DEBUG_EN
 #define DEBUG(input) Serial.print(input)
@@ -126,14 +165,13 @@ void printQueue(REQUEST* p);
 //******************************************** END FUNCTION prototypes ********************************************************************************
 //******************************************** BEGIN GENERAL variables ********************************************************************************
 
-byte PowerState = OFF;
-byte restartPowerState = OFF;
-long lastPeriod = -1;
-int rssi = 0;
-float systemVoltage = 5;
-float systemVoltagePrevious = 5;
-boolean batteryLow = false;
-boolean batteryLowShutdown = false;
+byte PowerState {OFF};
+byte restartPowerState {OFF};
+long lastPeriod {-1};
+int rssi {0};
+
+boolean batteryLow {false};
+boolean batteryLowShutdown {false};
 uint8_t batteryRptInterval {0};
 
 SPIFlash flash(SS_FLASHMEM, 0xEF30);  // EF30 for 4mbit Windbond FLASH MEM
@@ -181,19 +219,19 @@ void setRestartPowerState(byte ONOFF) {
     Serial << "Restart Power State: " << ONOFF << endl;
 }
 
+
 boolean readBattery() {
     // periodically read the battery voltage
     int currPeriod = millis() / BATTERYREADINTERVAL;
     if (currPeriod != lastPeriod) {
         lastPeriod = currPeriod;
         uint16_t ain = analogRead(BATTERYSENSE);
-        systemVoltage = BATTERY_VOLTS(ain);
+        systemVoltageMV = battMilliVolts(ain);
         if ( ++batteryRptInterval > BAT_REPORT_INTERVALS) {
-            dtostrf(systemVoltage, 3,2, buff);
-            Serial << "[1] MHBatt:" << buff << " ain:" << ain << endl;
+            Serial << "[1] MHBatt:" << systemVoltageMV << " ain:" << ain << endl;
             batteryRptInterval = 0;
         }
-        batteryLow = systemVoltage < LOWBATTERYTHRESHOLD;
+        batteryLow = systemVoltageMV < LOWBATTERYTHRESHOLDmv;
         return true;  // signal that batt has been read
     }
     return false;
@@ -219,12 +257,13 @@ void setupPowerControl() {
     byte sig2 = EEPROM.read(1);
     if (sig1 != 0x55 || sig2 != 0x22) {
         // First use, setup for saving restart power on/off state
-        EEPROM.write(0, 0x55);  // signature types
+        EEPROM.write(0, 0x55);  // signature bytes
         EEPROM.write(1, 0x22);
         EEPROM.write(2, OFF);  // state type: initialize to off.
     }
     restartPowerState = EEPROM.read(2);
     Serial << "EEPROM restart power state: " << restartPowerState << endl;
+    Serial << "ADC scaling factor: " << ADCVDivScaling() << endl;
 }
 
 bool waitBootOK() {
@@ -270,7 +309,7 @@ void shutdownPi() {
 
     // now wait for the Pi to signal back
     unsigned long start = millis();
-    float in, out;
+    byte blinkFlag {0};
     ledControl(LED_OFF);
     delay(SHUTOFF_TRIGGER_DELAY);
     while ((millis() - start) < PI_SHUTOFF_TIME) {
@@ -279,11 +318,12 @@ void shutdownPi() {
             ledControl(LED_OFF);  // digitalWrite(POWER_LED, PowerState); //turn off LED to indicate power is being cutoff
             start = millis();
             while (millis() - start < SHUTDOWN_FINAL_DELAY) {
-                if (in > 6.283)
-                    in = 0;
-                in += .00628;
-                out = sin(in) * 127.5 + 127.5;
-                analogWrite(BTN_LED_RED, out);
+                if ( blinkFlag&0x01) {
+                    ledControl(LED_RED);
+                } else {
+                    ledControl(LED_OFF);
+                }
+                ++blinkFlag;
                 delayMicroseconds(300);
             }
             PowerState = OFF;
@@ -371,13 +411,12 @@ void handlePowerControl() {
 
     // If battery is low and power is on then shutdown Pi.
     if (PowerState == ON && batteryLow) {
-        batteryLowShutdown = true;
         shutdownPi();
         return;
     }
-    // Check if system startup following a battery low shutdown.
+    // Check if system startup following a battery low shutdown and recharged battery.
     // (power failure time exceeded battery life)
-    if (PowerState == OFF && !batteryLow && restartPowerState == ON) {
+    if (PowerState==OFF && (systemVoltageMV>=CHARGINGTHRESHOLDmv) && restartPowerState==ON) {
         powerOnPi();
         return;
     }
@@ -451,13 +490,13 @@ boolean bootOK() {
     return analogRead(SIG_BOOTOK) > 800;  // the BOOTOK signal is on an analog pin because a digital may not always pick it up (its less than 3.3v)
 }
 
-void POWER(byte ON_OFF) {
+void POWER(byte onOff) {
     digitalWrite(LATCH_EN, HIGH);
-    digitalWrite(LATCH_VAL, ON_OFF);
+    digitalWrite(LATCH_VAL, onOff);
     delay(5);
     digitalWrite(LATCH_EN, LOW);
     delay(5);
-    Serial << "POWER: " << ON_OFF << endl;
+    Serial << "POWER: " << onOff << endl;
 }
 
 
