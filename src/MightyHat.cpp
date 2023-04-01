@@ -74,8 +74,8 @@ const uint8_t OFF{0};
 // Max output values:  1023*4883 = 4995309  and 1023*3223 = 327129
 // Results of these multiples require int32_t types. Normalizing 1.023E3 and 4.883E3 
 // and multiply yeilds 4.9953E6. Or 4.995V. 
-const int16_t LOWBATTERYTHRESHOLDmv {3500};
-const int16_t CHARGINGTHRESHOLDmv {4300};
+const uint16_t LOWBATTERYTHRESHOLDmv {3500};
+const uint16_t CHARGINGTHRESHOLDmv {4300};
 //
 // The voltage divider is BATT > 1Meg > A7 > 2.2Meg >GND
 // A7pin volts = ADCReading * 3.223E3. So 1023*.003223 normalized is
@@ -102,12 +102,10 @@ constexpr uint32_t ADCVDivScaling()
 //
 // Calculate millivolts by applying scalling and round off.
 //
-int16_t battMilliVolts(uint16_t adcReading){
+uint16_t battMilliVolts(uint16_t adcReading){
     return ((adcReading*ADCVDivScaling())+500)/1000;
 }
 uint16_t systemVoltageMV {5000};
-uint16_t systemVoltagePreviousMV {5000};
-
 
 // Times for power and button actions. Time in milliseconds.
 const int16_t RESETHOLDTIME{500};          // Button must be hold this many mseconds before a reset is issued (should be much less than SHUTDOWNHOLDTIME)
@@ -299,10 +297,10 @@ void forcePiShutdown() {
 
 void shutdownPi() {
     if (batteryLow) {
-        Serial << "Battery low! Shutting down Pi.." << endl;
+        Serial << "[1] Battery low: " << systemVoltageMV << " mv Shutting down Pi.." << endl;
         batteryLowShutdown = true;
     } else {
-        Serial << "Action OFF - Shutting down Pi.." << endl;
+        Serial << "[1] Switched OFF - Shutting down Pi.." << endl;
     }
     // signal Pi to shutdown (HIGH for > 1 sec)
     digitalWrite(SIG_SHUTOFF, HIGH);
