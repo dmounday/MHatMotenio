@@ -34,7 +34,7 @@
 // ADJUST THE SETTINGS BELOW DEPENDING ON YOUR HARDWARE/SCENARIO !
 //*****************************************************************************************************************************
 #define NODEID 1               // the gateway has ID=1
-#define NETWORKID 200          // all nodes on the same network can talk to each other
+#define NETWORKID 201          // all nodes on the same network can talk to each other
 #define FREQUENCY RF69_433MHZ  // RF69_915MHZ //Match this with the version of your Moteino! (others: RF69_433MHZ, RF69_868MHZ)
 //#define FREQUENCY_EXACT 916000000 //uncomment and set to a specific frequency in Hz, if commented the center frequency is used
 #define ENCRYPTKEY "sampleEncryptKey"  // has to be same 16 characters/bytes on all nodes, not more not less!
